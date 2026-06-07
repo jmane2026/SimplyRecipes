@@ -12,13 +12,15 @@ import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.client.input.KeyEvent;
 import net.minecraft.network.chat.Component;
+import net.minecraft.tags.TagKey;
+import net.minecraft.world.item.Item;
 import org.lwjgl.glfw.GLFW;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.core.registries.BuiltInRegistries;
-import net.neoforged.neoforge.network.PacketDistributor;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -52,7 +54,7 @@ public class EditorScreen extends Screen {
 
     private Mode currentMode = Mode.CRAFTING;
 
-    private final ItemStack[] inputs = new ItemStack[9];
+    private final IngredientHolder[] inputs = new IngredientHolder[9];
     private final List<OutputData> outputs = new ArrayList<>();
 
     private boolean isOverride = true;
@@ -75,13 +77,13 @@ public class EditorScreen extends Screen {
     private boolean isSidebarVisible = true;
     private int scrollOffset = 0;
 
-    private ItemStack draggedItem = ItemStack.EMPTY;
+    private IngredientHolder draggedItem = new IngredientHolder();
 
     protected EditorScreen(Identifier targetItem) {
         super(Component.literal("Recipe Editor: " + targetItem.toString()));
         this.targetItem = targetItem;
 
-        for (int i = 0; i < 9; i++) inputs[i] = ItemStack.EMPTY;
+        for (int i = 0; i < 9; i++) inputs[i] = new IngredientHolder();
 
         ItemStack result = BuiltInRegistries.ITEM.getOptional(targetItem)
                 .map(ItemStack::new).orElse(ItemStack.EMPTY);
@@ -169,25 +171,25 @@ public class EditorScreen extends Screen {
         switch (currentMode) {
             case CRAFTING -> {
                 recipeJson = isShapeless ? 
-                    RecipeGenerator.createShapelessRecipeTemplate(resultId, resultStack.getCount(), getIngredientsFromGrid()) :
-                    RecipeGenerator.createShapedRecipeTemplate(resultId, resultStack.getCount(), inputs);
+                        RecipeGenerator.createShapelessRecipeTemplate(resultId, resultStack.getCount(), getIngredientsFromGrid()) : 
+                        RecipeGenerator.createShapedRecipeTemplate(resultId, resultStack.getCount(), getShapedGridIngredients());
             }
             case SMELTING, BLASTING, SMOKING, CAMPFIRE_COOKING -> {
                 if (inputs[0].isEmpty()) return;
-                Identifier ingredientId = BuiltInRegistries.ITEM.getKey(inputs[0].getItem());
-                recipeJson = RecipeGenerator.createCookingRecipeTemplate(getCookingType(), resultId, ingredientId, cookTime, 0.1f);
+                String ingredient = inputs[0].getJsonName();
+                recipeJson = RecipeGenerator.createCookingRecipeTemplate(getCookingType(), resultId, ingredient, cookTime, 0.1f);
             }
             case STONECUTTING -> {
                 if (inputs[0].isEmpty()) return;
-                Identifier ingredientId = BuiltInRegistries.ITEM.getKey(inputs[0].getItem());
-                recipeJson = RecipeGenerator.createStonecuttingRecipeTemplate(resultId, resultStack.getCount(), ingredientId);
+                String ingredient = inputs[0].getJsonName();
+                recipeJson = RecipeGenerator.createStonecuttingRecipeTemplate(resultId, resultStack.getCount(), ingredient);
             }
             case SMITHING -> {
                 if (inputs[0].isEmpty() || inputs[1].isEmpty() || inputs[2].isEmpty()) return;
-                Identifier templateId = BuiltInRegistries.ITEM.getKey(inputs[0].getItem());
-                Identifier baseId = BuiltInRegistries.ITEM.getKey(inputs[1].getItem());
-                Identifier additionId = BuiltInRegistries.ITEM.getKey(inputs[2].getItem());
-                recipeJson = RecipeGenerator.createSmithingRecipeTemplate(resultId, templateId, baseId, additionId);
+                String template = inputs[0].getJsonName();
+                String base = inputs[1].getJsonName();
+                String addition = inputs[2].getJsonName();
+                recipeJson = RecipeGenerator.createSmithingRecipeTemplate(resultId, template, base, addition);
             }
         }
 
@@ -202,11 +204,19 @@ public class EditorScreen extends Screen {
         }
     }
 
-    private List<Identifier> getIngredientsFromGrid() {
-        List<Identifier> ingredients = new ArrayList<>();
-        for (ItemStack stack : inputs) {
-            if (!stack.isEmpty()) {
-                ingredients.add(BuiltInRegistries.ITEM.getKey(stack.getItem()));
+    private String[] getShapedGridIngredients() {
+        String[] ingredients = new String[9];
+        for (int i = 0; i < 9; i++) {
+            ingredients[i] = inputs[i].isEmpty() ? "" : inputs[i].getJsonName();
+        }
+        return ingredients;
+    }
+
+    private List<String> getIngredientsFromGrid() {
+        List<String> ingredients = new ArrayList<>();
+        for (IngredientHolder holder : inputs) {
+            if (!holder.isEmpty()) {
+                ingredients.add(holder.getJsonName());
             }
         }
         return ingredients;
@@ -249,28 +259,53 @@ public class EditorScreen extends Screen {
 
     private void updateSearch(String query) {
         String lowerQuery = query.toLowerCase();
+        this.filteredItems = new ArrayList<>();
 
-        List<SearchEntry> items = BuiltInRegistries.ITEM.stream()
+        if (lowerQuery.startsWith("#")) {
+            String tagPart = lowerQuery.substring(1);
+            // Use getTags() to iterate through all available tags in the registry
+            BuiltInRegistries.ITEM.getTags().forEach(tagNamed -> {
+                // In 1.21.3, getTags() returns HolderSet.Named. 
+                // We extract the TagKey using .key()
+                TagKey<Item> tagKey = tagNamed.key();
+                
+                if (tagKey.location().toString().contains(tagPart)) {
+                    // Add the cycling tag entry first. 
+                    this.filteredItems.add(new SearchEntry(tagKey));
+
+                    // Add each member separately
+                    getTagMembers(tagKey).forEach(stack -> {
+                        this.filteredItems.add(new SearchEntry(stack, null, false));
+                    });
+                }
+            });
+        } else {
+            BuiltInRegistries.ITEM.stream()
                 .filter(item -> {
                     Identifier id = BuiltInRegistries.ITEM.getKey(item);
                     if (lowerQuery.startsWith("@")) {
                         return id.getNamespace().contains(lowerQuery.substring(1));
-                    } else if (lowerQuery.startsWith("#")) {
-                        String tagPart = lowerQuery.substring(1);
-                        return BuiltInRegistries.ITEM.wrapAsHolder(item).tags().anyMatch(tag -> tag.location().toString().contains(tagPart));
                     } else {
                         if (id.toString().contains(lowerQuery)) return true;
                         String translatedName = Component.translatable(item.getDescriptionId()).getString().toLowerCase();
                         return translatedName.contains(lowerQuery);
                     }
                 })
-                .map(item -> new SearchEntry(new ItemStack(item)))
-                .collect(Collectors.toList());
-
-        this.filteredItems = new ArrayList<>();
-        this.filteredItems.addAll(items);
+                    .forEach(item -> this.filteredItems.add(new SearchEntry(new ItemStack(item))));
+        }
 
         this.scrollOffset = 0;
+    }
+
+    private List<ItemStack> getTagMembers(TagKey<Item> tag) {
+        List<ItemStack> members = new ArrayList<>();
+        // Iterate through all items and check if their holder contains the specified tag
+        for (Item item : BuiltInRegistries.ITEM) {
+            if (BuiltInRegistries.ITEM.wrapAsHolder(item).tags().anyMatch(t -> t.equals(tag))) {
+                members.add(new ItemStack(item));
+            }
+        }
+        return members;
     }
 
     @Override
@@ -325,7 +360,20 @@ public class EditorScreen extends Screen {
             renderDropdownList(graphics, mouseX, mouseY);
         }
 
-        graphics.fakeItem(draggedItem, mouseX - 8, mouseY - 8);
+        renderIngredient(graphics, draggedItem, mouseX - 8, mouseY - 8);
+    }
+
+    private void renderIngredient(GuiGraphicsExtractor graphics, IngredientHolder ingredient, int x, int y) {
+        if (ingredient.isEmpty()) return;
+        if (ingredient.isTag) {
+            List<ItemStack> items = getTagMembers(ingredient.tag);
+            if (!items.isEmpty()) {
+                int index = (int) ((System.currentTimeMillis() / 1000) % items.size());
+                graphics.fakeItem(items.get(index), x, y);
+            }
+        } else {
+            graphics.fakeItem(ingredient.stack, x, y);
+        }
     }
 
     private void renderConfigurationRows(GuiGraphicsExtractor graphics, int centerX, int centerY, int mouseX, int mouseY, float partialTick) {
@@ -399,7 +447,7 @@ public class EditorScreen extends Screen {
             SearchEntry entry = filteredItems.get(idx);
             drawSlot(graphics, x, y, mouseX, mouseY);
 
-            graphics.fakeItem(entry.stack, x + 1, y + 1);
+            renderIngredient(graphics, entry.toHolder(), x + 1, y + 1);
         }
     }
 
@@ -412,7 +460,7 @@ public class EditorScreen extends Screen {
                 int slotX = startX + (col * 20);
                 int slotY = startY + (row * 20);
                 drawSlot(graphics, slotX, slotY, mouseX, mouseY);
-                graphics.fakeItem(inputs[row * 3 + col], slotX + 1, slotY + 1);
+                renderIngredient(graphics, inputs[row * 3 + col], slotX + 1, slotY + 1);
             }
         }
 
@@ -427,19 +475,19 @@ public class EditorScreen extends Screen {
 
         if (currentMode == Mode.SMITHING) {
             drawSlot(graphics, centerX - 60, centerY - 30, mouseX, mouseY);
-            graphics.fakeItem(inputs[0], centerX - 59, centerY - 29);
+            renderIngredient(graphics, inputs[0], centerX - 59, centerY - 29);
 
             drawSlot(graphics, centerX - 40, centerY - 30, mouseX, mouseY);
-            graphics.fakeItem(inputs[1], centerX - 39, centerY - 29);
+            renderIngredient(graphics, inputs[1], centerX - 39, centerY - 29);
 
             drawSlot(graphics, centerX - 20, centerY - 30, mouseX, mouseY);
-            graphics.fakeItem(inputs[2], centerX - 19, centerY - 29);
+            renderIngredient(graphics, inputs[2], centerX - 19, centerY - 29);
 
             graphics.fakeItem(currentMode.getStationStack(), centerX + 7, centerY - 29);
             outputX = centerX + 30;
         } else {
             drawSlot(graphics, centerX - 30, centerY - 30, mouseX, mouseY);
-            graphics.fakeItem(inputs[0], centerX - 29, centerY - 29);
+            renderIngredient(graphics, inputs[0], centerX - 29, centerY - 29);
 
             graphics.fakeItem(currentMode.getStationStack(), centerX - 5, centerY - 29);
         }
@@ -509,7 +557,7 @@ public class EditorScreen extends Screen {
                 int idx = i + scrollOffset;
                 if (idx < filteredItems.size()) {
                     SearchEntry entry = filteredItems.get(idx);
-                    this.draggedItem = entry.stack.copy();
+                    this.draggedItem = entry.toHolder();
                     return true;
                 }
             }
@@ -552,10 +600,10 @@ public class EditorScreen extends Screen {
         int outputY = centerY - 30;
         if (mouseX >= outputStartX && mouseX <= (outputStartX + 18) && mouseY >= outputY && mouseY <= (outputY + 18)) {
             if (button == 1) {
-                outputs.get(0).stack = ItemStack.EMPTY;
+                outputs.get(0).stack = ItemStack.EMPTY; // Result still requires specific item
                 this.recipeNameBox.setValue("");
-            } else if (!draggedItem.isEmpty()) {
-                outputs.get(0).stack = draggedItem.copy();
+            } else if (!draggedItem.isEmpty() && !draggedItem.isTag) {
+                outputs.get(0).stack = draggedItem.stack.copy();
                 Identifier id = BuiltInRegistries.ITEM.getKey(outputs.get(0).stack.getItem());
                 if (id != null) this.recipeNameBox.setValue(id.toString());
             }
@@ -571,19 +619,19 @@ public class EditorScreen extends Screen {
 
         ItemStack cursorStack = Minecraft.getInstance().player.containerMenu.getCarried();
         if (!cursorStack.isEmpty()) {
-             this.draggedItem = cursorStack.copy();
+            this.draggedItem.set(cursorStack.copy());
              return true; // Return here so the code below doesn't immediately clear it
         }
 
         // Only clear the item if we clicked the empty background and weren't picking something up
-        this.draggedItem = ItemStack.EMPTY;
+        this.draggedItem.clear();
 
         return super.mouseClicked(event, doubleClicked);
     }
 
     private void handleSlotClick(int slotIndex, int button) {
         if (button == 1) {
-            inputs[slotIndex] = ItemStack.EMPTY;
+            inputs[slotIndex].clear();
         } else if (!draggedItem.isEmpty()) {
             inputs[slotIndex] = draggedItem.copy();
         }
@@ -641,7 +689,37 @@ public class EditorScreen extends Screen {
         }
     }
 
-    private record SearchEntry(ItemStack stack) {}
+    private static class IngredientHolder {
+        ItemStack stack = ItemStack.EMPTY;
+        TagKey<Item> tag = null;
+        boolean isTag = false;
+
+        void set(ItemStack stack) { this.stack = stack; this.isTag = false; this.tag = null; }
+        void set(TagKey<Item> tag) { this.tag = tag; this.isTag = true; this.stack = ItemStack.EMPTY; }
+        void clear() { this.stack = ItemStack.EMPTY; this.tag = null; this.isTag = false; }
+        boolean isEmpty() { return isTag ? tag == null : stack.isEmpty(); }
+        IngredientHolder copy() {
+            IngredientHolder copy = new IngredientHolder();
+            copy.stack = this.stack.copy();
+            copy.tag = this.tag;
+            copy.isTag = this.isTag;
+            return copy;
+        }
+        String getJsonName() {
+            if (isTag) return "#" + tag.location().toString();
+            return BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
+        }
+    }
+
+    private record SearchEntry(ItemStack stack, TagKey<Item> tag, boolean isTag) {
+        public SearchEntry(ItemStack stack) { this(stack, null, false); }
+        public SearchEntry(TagKey<Item> tag) { this(ItemStack.EMPTY, tag, true); }
+        public IngredientHolder toHolder() {
+            IngredientHolder h = new IngredientHolder();
+            if (isTag) h.set(tag); else h.set(stack.copy());
+            return h;
+        }
+    }
 
     private static class OutputData {
         ItemStack stack;

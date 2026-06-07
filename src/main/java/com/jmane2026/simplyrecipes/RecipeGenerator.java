@@ -35,26 +35,25 @@ public class RecipeGenerator {
         }
     }
 
-    public static JsonObject createShapedRecipeTemplate(Identifier resultId, int count, ItemStack[] grid) {
+    public static JsonObject createShapedRecipeTemplate(Identifier resultId, int count, String[] grid) {
         JsonObject json = new JsonObject();
         json.addProperty("type", "minecraft:crafting_shaped");
 
-        Map<Identifier, Character> keyMap = new HashMap<>();
+        Map<String, Character> keyMap = new HashMap<>();
         char nextChar = 'A';
         
         JsonArray patternArray = new JsonArray();
         for (int row = 0; row < 3; row++) {
             StringBuilder rowString = new StringBuilder();
             for (int col = 0; col < 3; col++) {
-                ItemStack stack = grid[row * 3 + col];
-                if (stack.isEmpty()) {
+                String ingredient = grid[row * 3 + col];
+                if (ingredient.isEmpty()) {
                     rowString.append(" ");
                 } else {
-                    Identifier id = BuiltInRegistries.ITEM.getKey(stack.getItem());
-                    if (!keyMap.containsKey(id)) {
-                        keyMap.put(id, nextChar++);
+                    if (!keyMap.containsKey(ingredient)) {
+                        keyMap.put(ingredient, nextChar++);
                     }
-                    rowString.append(keyMap.get(id));
+                    rowString.append(keyMap.get(ingredient));
                 }
             }
             patternArray.add(rowString.toString());
@@ -62,8 +61,8 @@ public class RecipeGenerator {
         json.add("pattern", patternArray);
 
         JsonObject keyObject = new JsonObject();
-        for (Map.Entry<Identifier, Character> entry : keyMap.entrySet()) {
-            keyObject.addProperty(entry.getValue().toString(), entry.getKey().toString());
+        for (Map.Entry<String, Character> entry : keyMap.entrySet()) {
+            keyObject.addProperty(entry.getValue().toString(), entry.getKey());
         }
         json.add("key", keyObject);
 
@@ -75,13 +74,13 @@ public class RecipeGenerator {
         return json;
     }
 
-    public static JsonObject createShapelessRecipeTemplate(Identifier resultId, int count, List<Identifier> ingredients) {
+    public static JsonObject createShapelessRecipeTemplate(Identifier resultId, int count, List<String> ingredients) {
         JsonObject json = new JsonObject();
         json.addProperty("type", "minecraft:crafting_shapeless");
 
         JsonArray ingredientArray = new JsonArray();
-        for (Identifier ing : ingredients) {
-            ingredientArray.add(ing.toString());
+        for (String ing : ingredients) {
+            ingredientArray.add(ing);
         }
         json.add("ingredients", ingredientArray);
 
@@ -93,11 +92,11 @@ public class RecipeGenerator {
         return json;
     }
 
-    public static JsonObject createCookingRecipeTemplate(String type, Identifier resultId, Identifier ingredientId, int cookingTime, float experience) {
+    public static JsonObject createCookingRecipeTemplate(String type, Identifier resultId, String ingredient, int cookingTime, float experience) {
         JsonObject json = new JsonObject();
         json.addProperty("type", type);
 
-        json.addProperty("ingredient", ingredientId.toString());
+        json.addProperty("ingredient", ingredient);
 
         JsonObject result = new JsonObject();
         result.addProperty("id", resultId.toString());
@@ -109,11 +108,11 @@ public class RecipeGenerator {
         return json;
     }
 
-    public static JsonObject createStonecuttingRecipeTemplate(Identifier resultId, int count, Identifier ingredientId) {
+    public static JsonObject createStonecuttingRecipeTemplate(Identifier resultId, int count, String ingredient) {
         JsonObject json = new JsonObject();
         json.addProperty("type", "minecraft:stonecutting");
 
-        json.addProperty("ingredient", ingredientId.toString());
+        json.addProperty("ingredient", ingredient);
 
         json.addProperty("result", resultId.toString());
         json.addProperty("count", count);
@@ -121,13 +120,13 @@ public class RecipeGenerator {
         return json;
     }
 
-    public static JsonObject createSmithingRecipeTemplate(Identifier resultId, Identifier templateId, Identifier baseId, Identifier additionId) {
+    public static JsonObject createSmithingRecipeTemplate(Identifier resultId, String template, String base, String addition) {
         JsonObject json = new JsonObject();
         json.addProperty("type", "minecraft:smithing_transform");
 
-        json.addProperty("template", templateId.toString());
-        json.addProperty("base", baseId.toString());
-        json.addProperty("addition", additionId.toString());
+        json.addProperty("template", template);
+        json.addProperty("base", base);
+        json.addProperty("addition", addition);
 
         JsonObject result = new JsonObject();
         result.addProperty("id", resultId.toString());
