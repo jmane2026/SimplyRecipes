@@ -1,5 +1,7 @@
 package com.jmane2026.simplyrecipes;
 
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.Button;
@@ -8,16 +10,21 @@ import net.minecraft.client.gui.screens.Screen;
 import com.google.gson.JsonObject;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.input.MouseButtonEvent;
+import net.minecraft.client.input.KeyEvent;
 import net.minecraft.network.chat.Component;
+import org.lwjgl.glfw.GLFW;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.neoforged.neoforge.network.PacketDistributor;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
 
 public class EditorScreen extends Screen {
     private final Identifier targetItem;
+    private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
     public enum Mode {
         CRAFTING("Crafting", "crafting_table"),
@@ -142,77 +149,81 @@ public class EditorScreen extends Screen {
 
     private void saveRecipe() {
         ItemStack resultStack = outputs.get(0).stack;
-        if (resultStack.isEmpty()) return;
+        if (resultStack.isEmpty()) {
+            Minecraft.getInstance().player.sendSystemMessage(Component.literal("§cCannot save: Output is empty!"));
+            return;
+        }
 
         Identifier resultId = BuiltInRegistries.ITEM.getKey(resultStack.getItem());
-        String rawInput = recipeNameBox.getValue().toLowerCase();
-        
-        Identifier recipeId;
-        if (isOverride) {
-            recipeId = resultId;
-        } else {
-            if (rawInput.contains(":")) {
-                String[] parts = rawInput.split(":", 2);
-                recipeId = Identifier.fromNamespaceAndPath(parts[0], parts[1].replaceAll("[^a-z0-9/._-]", ""));
-            } else {
-                String fileName = rawInput.replaceAll("[^a-z0-9/._-]", "");
-                if (fileName.isEmpty()) fileName = resultId.getPath() + "_custom";
-                recipeId = Identifier.fromNamespaceAndPath(resultId.getNamespace(), fileName);
-            }
-        }
-        
-        int cookTime = 200;
+        Identifier recipeId = getFinalRecipeId(resultId);
+        JsonObject recipeJson = null;
+
+        // Parse Cook Time safely
+        int cookTime;
         try {
             cookTime = Integer.parseInt(processingTimeBox.getValue());
-        } catch (NumberFormatException ignored) {}
-
-        if (currentMode == Mode.CRAFTING) {
-            if (isShapeless) {
-                List<Identifier> ingredients = new ArrayList<>();
-                for (ItemStack stack : inputs) {
-                    if (!stack.isEmpty()) {
-                        ingredients.add(BuiltInRegistries.ITEM.getKey(stack.getItem()));
-                    }
-                }
-                JsonObject json = RecipeGenerator.createShapelessRecipeTemplate(resultId, resultStack.getCount(), ingredients);
-                RecipeGenerator.saveCustomRecipe(recipeId, json);
-            } else {
-                JsonObject json = RecipeGenerator.createShapedRecipeTemplate(resultId, resultStack.getCount(), inputs);
-                RecipeGenerator.saveCustomRecipe(recipeId, json);
-            }
-        } 
-        else if (isCookingMode()) {
-            if (inputs[0].isEmpty()) return;
-            Identifier ingredientId = BuiltInRegistries.ITEM.getKey(inputs[0].getItem());
-            String type = getCookingType();
-            JsonObject json = RecipeGenerator.createCookingRecipeTemplate(type, resultId, ingredientId, cookTime, 0.1f);
-            RecipeGenerator.saveCustomRecipe(recipeId, json);
-        } 
-        else if (currentMode == Mode.STONECUTTING) {
-            if (inputs[0].isEmpty()) return;
-            Identifier ingredientId = BuiltInRegistries.ITEM.getKey(inputs[0].getItem());
-            JsonObject json = RecipeGenerator.createStonecuttingRecipeTemplate(resultId, resultStack.getCount(), ingredientId);
-            RecipeGenerator.saveCustomRecipe(recipeId, json);
-        } 
-        else if (currentMode == Mode.SMITHING) {
-            if (inputs[0].isEmpty() || inputs[1].isEmpty() || inputs[2].isEmpty()) return;
-            Identifier templateId = BuiltInRegistries.ITEM.getKey(inputs[0].getItem());
-            Identifier baseId = BuiltInRegistries.ITEM.getKey(inputs[1].getItem());
-            Identifier additionId = BuiltInRegistries.ITEM.getKey(inputs[2].getItem());
-            JsonObject json = RecipeGenerator.createSmithingRecipeTemplate(resultId, templateId, baseId, additionId);
-            RecipeGenerator.saveCustomRecipe(recipeId, json);
+        } catch (NumberFormatException e) {
+            cookTime = currentMode.getDefaultTicks();
         }
 
-        Minecraft mc = Minecraft.getInstance();
-        if (mc.player != null && mc.isSingleplayer()) {
-            mc.player.sendSystemMessage(
-                Component.literal("§aSuccessfully saved: §f" + recipeId.toString())
+        switch (currentMode) {
+            case CRAFTING -> {
+                recipeJson = isShapeless ? 
+                    RecipeGenerator.createShapelessRecipeTemplate(resultId, resultStack.getCount(), getIngredientsFromGrid()) :
+                    RecipeGenerator.createShapedRecipeTemplate(resultId, resultStack.getCount(), inputs);
+            }
+            case SMELTING, BLASTING, SMOKING, CAMPFIRE_COOKING -> {
+                if (inputs[0].isEmpty()) return;
+                Identifier ingredientId = BuiltInRegistries.ITEM.getKey(inputs[0].getItem());
+                recipeJson = RecipeGenerator.createCookingRecipeTemplate(getCookingType(), resultId, ingredientId, cookTime, 0.1f);
+            }
+            case STONECUTTING -> {
+                if (inputs[0].isEmpty()) return;
+                Identifier ingredientId = BuiltInRegistries.ITEM.getKey(inputs[0].getItem());
+                recipeJson = RecipeGenerator.createStonecuttingRecipeTemplate(resultId, resultStack.getCount(), ingredientId);
+            }
+            case SMITHING -> {
+                if (inputs[0].isEmpty() || inputs[1].isEmpty() || inputs[2].isEmpty()) return;
+                Identifier templateId = BuiltInRegistries.ITEM.getKey(inputs[0].getItem());
+                Identifier baseId = BuiltInRegistries.ITEM.getKey(inputs[1].getItem());
+                Identifier additionId = BuiltInRegistries.ITEM.getKey(inputs[2].getItem());
+                recipeJson = RecipeGenerator.createSmithingRecipeTemplate(resultId, templateId, baseId, additionId);
+            }
+        }
+
+        if (recipeJson != null) {
+            if (Minecraft.getInstance().getConnection() != null) {
+                Minecraft.getInstance().getConnection().send(new SaveRecipePayload(recipeId, GSON.toJson(recipeJson)));
+            }
+
+            Minecraft.getInstance().player.sendSystemMessage(
+                    Component.literal("§eSending recipe data to server... §f(" + recipeId.toString() + ")")
             );
+        }
+    }
 
-            if (mc.player.connection != null) {
-                mc.player.connection.sendCommand("reload");
+    private List<Identifier> getIngredientsFromGrid() {
+        List<Identifier> ingredients = new ArrayList<>();
+        for (ItemStack stack : inputs) {
+            if (!stack.isEmpty()) {
+                ingredients.add(BuiltInRegistries.ITEM.getKey(stack.getItem()));
             }
         }
+        return ingredients;
+    }
+
+    private Identifier getFinalRecipeId(Identifier resultId) {
+        if (isOverride) return resultId;
+
+        String rawInput = recipeNameBox.getValue().toLowerCase();
+        if (rawInput.contains(":")) {
+            String[] parts = rawInput.split(":", 2);
+            return Identifier.fromNamespaceAndPath(parts[0], parts[1].replaceAll("[^a-z0-9/._-]", ""));
+        }
+        
+        String fileName = rawInput.replaceAll("[^a-z0-9/._-]", "");
+        if (fileName.isEmpty()) fileName = resultId.getPath() + "_custom";
+        return Identifier.fromNamespaceAndPath(resultId.getNamespace(), fileName);
     }
 
     private String getCookingType() {
@@ -305,21 +316,8 @@ public class EditorScreen extends Screen {
             this.searchBox.extractRenderState(graphics, mouseX, mouseY, partialTick);
         }
 
-        if (this.overrideCheckbox.visible) {
-            this.overrideCheckbox.extractRenderState(graphics, mouseX, mouseY, partialTick);
-            graphics.text(this.font, Component.literal("Override Existing"), centerX - 50, centerY + 20, 0xFF3F3F3F,false);
-        }
-        if (this.shapelessCheckbox.visible) {
-            this.shapelessCheckbox.extractRenderState(graphics, mouseX, mouseY, partialTick);
-            graphics.text(this.font, Component.literal("Shapeless"), centerX - 50, centerY + 40, 0xFF3F3F3F,false);
-        }
-        if (this.processingTimeBox.visible) {
-            this.processingTimeBox.extractRenderState(graphics, mouseX, mouseY, partialTick);
-            graphics.text(this.font, Component.literal("Ticks"), centerX - 30, centerY + 40, 0xFF3F3F3F,false);
-        }
+        renderConfigurationRows(graphics, centerX, centerY, mouseX, mouseY, partialTick);
 
-        this.toggleButton.extractRenderState(graphics, mouseX, mouseY, partialTick);
-        this.modeSelector.extractRenderState(graphics, mouseX, mouseY, partialTick);
         if (this.recipeNameBox.visible) this.recipeNameBox.extractRenderState(graphics, mouseX, mouseY, partialTick);
         this.saveButton.extractRenderState(graphics, mouseX, mouseY, partialTick);
 
@@ -328,6 +326,23 @@ public class EditorScreen extends Screen {
         }
 
         graphics.fakeItem(draggedItem, mouseX - 8, mouseY - 8);
+    }
+
+    private void renderConfigurationRows(GuiGraphicsExtractor graphics, int centerX, int centerY, int mouseX, int mouseY, float partialTick) {
+        if (this.overrideCheckbox.visible) {
+            this.overrideCheckbox.extractRenderState(graphics, mouseX, mouseY, partialTick);
+            graphics.text(this.font, Component.literal("Override Existing"), centerX - 50, centerY + 20, 0xFF3F3F3F, false);
+        }
+        if (this.shapelessCheckbox.visible) {
+            this.shapelessCheckbox.extractRenderState(graphics, mouseX, mouseY, partialTick);
+            graphics.text(this.font, Component.literal("Shapeless"), centerX - 50, centerY + 40, 0xFF3F3F3F, false);
+        }
+        if (this.processingTimeBox.visible) {
+            this.processingTimeBox.extractRenderState(graphics, mouseX, mouseY, partialTick);
+            graphics.text(this.font, Component.literal("Ticks"), centerX - 30, centerY + 40, 0xFF3F3F3F, false);
+        }
+        this.toggleButton.extractRenderState(graphics, mouseX, mouseY, partialTick);
+        this.modeSelector.extractRenderState(graphics, mouseX, mouseY, partialTick);
     }
 
     private void renderWorkstationBackground(GuiGraphicsExtractor graphics, int centerX, int centerY) {
@@ -551,17 +566,16 @@ public class EditorScreen extends Screen {
 
         if (isSidebarVisible) {
             boolean handled = this.searchBox.mouseClicked(event, doubleClicked);
-            if (handled) {
-                this.setFocused(this.searchBox);
-                return true;
-            }
+            if (handled) { this.setFocused(this.searchBox); return true; }
         }
 
         ItemStack cursorStack = Minecraft.getInstance().player.containerMenu.getCarried();
         if (!cursorStack.isEmpty()) {
              this.draggedItem = cursorStack.copy();
+             return true; // Return here so the code below doesn't immediately clear it
         }
 
+        // Only clear the item if we clicked the empty background and weren't picking something up
         this.draggedItem = ItemStack.EMPTY;
 
         return super.mouseClicked(event, doubleClicked);
@@ -573,6 +587,25 @@ public class EditorScreen extends Screen {
         } else if (!draggedItem.isEmpty()) {
             inputs[slotIndex] = draggedItem.copy();
         }
+    }
+
+    @Override
+    public boolean keyPressed(KeyEvent event) {
+        int keyCode = event.key();
+
+        // If any of the text boxes are focused, we let them handle the key press
+        // so that typing 'e' or 'k' doesn't accidentally close the editor.
+        if (this.searchBox.isFocused() || this.recipeNameBox.isFocused() || this.processingTimeBox.isFocused()) {
+            return super.keyPressed(event);
+        }
+
+        // Check if 'E' was pressed or if the configurable 'K' keybind was pressed
+        if (keyCode == GLFW.GLFW_KEY_E || SimplyRecipes.EDITOR_KEY.matches(event)) {
+            this.onClose();
+            return true;
+        }
+
+        return super.keyPressed(event);
     }
 
     private void handleExternalDrag() { }

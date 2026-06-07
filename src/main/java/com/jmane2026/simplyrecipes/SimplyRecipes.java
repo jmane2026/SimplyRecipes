@@ -5,6 +5,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.KeyMapping;
 import net.neoforged.neoforge.client.event.RegisterKeyMappingsEvent;
 import net.neoforged.neoforge.client.event.InputEvent;
+import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
 import org.lwjgl.glfw.GLFW;
 import org.slf4j.Logger;
 import com.mojang.logging.LogUtils;
@@ -44,6 +45,7 @@ public class SimplyRecipes {
         createRecipeDirectory();
 
         modEventBus.addListener(this::onAddPackFinders);
+        modEventBus.addListener(this::registerNetworking);
         modEventBus.addListener(this::onRegisterKeyMappings);
 
         NeoForge.EVENT_BUS.addListener(this::onKeyInput);
@@ -63,6 +65,11 @@ public class SimplyRecipes {
                 mc.execute(() -> mc.setScreen(new EditorScreen(defaultId)));
             }
         }
+    }
+
+    private void registerNetworking(final RegisterPayloadHandlersEvent event) {
+        event.registrar("1")
+                .playToServer(SaveRecipePayload.TYPE, SaveRecipePayload.STREAM_CODEC, NetworkHandler::handleSaveRecipe);
     }
 
     private void createRecipeDirectory() {
