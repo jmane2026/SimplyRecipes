@@ -49,8 +49,6 @@ public class SimplyRecipes {
         modEventBus.addListener(this::onRegisterKeyMappings);
 
         NeoForge.EVENT_BUS.addListener(this::onKeyInput);
-
-        modContainer.registerConfig(ModConfig.Type.COMMON, Config.SPEC);
     }
 
     private void onRegisterKeyMappings(RegisterKeyMappingsEvent event) {
@@ -69,7 +67,9 @@ public class SimplyRecipes {
 
     private void registerNetworking(final RegisterPayloadHandlersEvent event) {
         event.registrar("1")
-                .playToServer(SaveRecipePayload.TYPE, SaveRecipePayload.STREAM_CODEC, NetworkHandler::handleSaveRecipe);
+                .playToServer(SaveRecipePayload.TYPE, SaveRecipePayload.STREAM_CODEC, NetworkHandler::handleSaveRecipe)
+                .playToServer(RequestRecipesPayload.TYPE, RequestRecipesPayload.STREAM_CODEC, NetworkHandler::handleRequestRecipes)
+                .playToClient(ProvideRecipesPayload.TYPE, ProvideRecipesPayload.STREAM_CODEC, NetworkHandler::handleProvideRecipes);
     }
 
     private void createRecipeDirectory() {

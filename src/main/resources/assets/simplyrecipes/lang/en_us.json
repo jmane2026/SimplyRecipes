@@ -1,3 +1,12 @@
 {
-
+  "key.simplyrecipes.open_editor": "Open Recipe Editor",
+  "gui.simplyrecipes.search_hint": "Search...",
+  "gui.simplyrecipes.recipe_name": "Recipe ID",
+  "gui.simplyrecipes.ticks": "Ticks",
+  "gui.simplyrecipes.override": "Override Existing",
+  "gui.simplyrecipes.shapeless": "Shapeless",
+  "gui.simplyrecipes.save": "Save",
+  "gui.simplyrecipes.close": "Close",
+  "gui.simplyrecipes.search": "Search",
+  "gui.simplyrecipes.remove": "Remove Recipe"
 }

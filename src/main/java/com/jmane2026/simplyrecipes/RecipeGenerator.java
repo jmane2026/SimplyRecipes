@@ -134,4 +134,17 @@ public class RecipeGenerator {
 
         return json;
     }
+
+    public static JsonObject createDeletionTemplate() {
+        JsonObject json = new JsonObject();
+        json.addProperty("type", "minecraft:crafting_shaped");
+        json.add("pattern", new JsonArray());
+        json.add("key", new JsonObject());
+        JsonObject result = new JsonObject();
+        result.addProperty("id", "minecraft:air");
+        result.addProperty("count", 0);
+        json.add("result", result);
+        return json;
+    }
+
 }

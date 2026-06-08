@@ -8,6 +8,8 @@ import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.Checkbox;
 import net.minecraft.client.gui.screens.Screen;
 import com.google.gson.JsonObject;
+import net.minecraft.client.gui.screens.inventory.tooltip.ClientTooltipComponent;
+import net.minecraft.client.gui.screens.inventory.tooltip.DefaultTooltipPositioner;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.client.input.KeyEvent;
@@ -28,19 +30,30 @@ public class EditorScreen extends Screen {
     private final Identifier targetItem;
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
-    public enum Mode {
+    public enum Category {
+        ADD_RECIPE("Add Recipe"),
+        REMOVE_RECIPE("Remove"),
+        CREATE_ITEM("Create Item"),
+        CREATE_BLOCK("Create Block");
+
+        private final String displayName;
+        Category(String displayName) { this.displayName = displayName; }
+        public String getDisplayName() { return displayName; }
+    }
+
+    public enum RecipeType {
         CRAFTING("Crafting", "crafting_table"),
         SMELTING("Smelting", "furnace"),
         BLASTING("Blasting", "blast_furnace"),
         SMOKING("Smoking", "smoker"),
-        CAMPFIRE_COOKING("Campfire Cooking", "campfire"),
-        STONECUTTING("Stonecutting", "stonecutter"),
+        CAMPFIRE_COOKING("Campfire", "campfire"),
+        STONECUTTING("Stonecutter", "stonecutter"),
         SMITHING("Smithing", "smithing_table");
 
         private final String displayName;
         private final Identifier stationId;
 
-        Mode(String displayName, String stationPath) {
+        RecipeType(String displayName, String stationPath) {
             this.displayName = displayName;
             this.stationId = Identifier.fromNamespaceAndPath("minecraft", stationPath);
         }
@@ -52,7 +65,8 @@ public class EditorScreen extends Screen {
         }
     }
 
-    private Mode currentMode = Mode.CRAFTING;
+    private Category currentCategory = Category.ADD_RECIPE;
+    private RecipeType currentRecipeType = RecipeType.CRAFTING;
 
     private final IngredientHolder[] inputs = new IngredientHolder[9];
     private final List<OutputData> outputs = new ArrayList<>();
@@ -62,11 +76,13 @@ public class EditorScreen extends Screen {
 
     private Checkbox overrideCheckbox;
     private boolean isDropdownOpen = false;
+    private boolean isTypeDropdownOpen = false;
     private int dropdownScroll = 0;
     private static final int MAX_DROPDOWN_VISIBLE = 5;
 
     private Checkbox shapelessCheckbox;
-    private Button modeSelector;
+    private Button categorySelector;
+    private Button recipeTypeSelector;
     private Button saveButton;
 
     private EditBox recipeNameBox;
@@ -78,6 +94,10 @@ public class EditorScreen extends Screen {
     private int scrollOffset = 0;
 
     private IngredientHolder draggedItem = new IngredientHolder();
+    private IngredientHolder hoveredIngredient = null;
+
+    private List<ProvideRecipesPayload.RecipeInfo> discoveredRecipes = new ArrayList<>();
+    private int discoveryIndex = 0;
 
     protected EditorScreen(Identifier targetItem) {
         super(Component.literal("Recipe Editor: " + targetItem.toString()));
@@ -94,26 +114,30 @@ public class EditorScreen extends Screen {
     protected void init() {
         super.init();
 
-        this.searchBox = new EditBox(this.font, 10, 10, 100, 20, Component.literal("Search..."));
+        this.searchBox = new EditBox(this.font, 10, 10, 100, 20, Component.translatable("gui.simplyrecipes.search_hint"));
         this.searchBox.setResponder(this::updateSearch);
         this.addRenderableWidget(this.searchBox);
 
-        this.recipeNameBox = new EditBox(this.font, 0, 0, 100, 20, Component.literal("Recipe Name"));
+        this.recipeNameBox = new EditBox(this.font, 0, 0, 100, 20, Component.translatable("gui.simplyrecipes.recipe_name"));
         this.recipeNameBox.setValue(targetItem.toString());
         this.recipeNameBox.setMaxLength(128);
         this.addRenderableWidget(this.recipeNameBox);
 
-        this.processingTimeBox = new EditBox(this.font, 0, 0, 40, 20, Component.literal("Ticks"));
+        this.processingTimeBox = new EditBox(this.font, 0, 0, 40, 20, Component.translatable("gui.simplyrecipes.ticks"));
         this.processingTimeBox.setValue("200");
         this.addRenderableWidget(this.processingTimeBox);
 
-        this.toggleButton = Button.builder(Component.literal("Close"), (btn) -> {
+        this.toggleButton = Button.builder(Component.translatable("gui.simplyrecipes.close"), (btn) -> {
             this.toggleSidebar();
         }).pos(10, this.height - 30).size(100, 20).build();
 
-        this.modeSelector = Button.builder(Component.literal(currentMode.getDisplayName()), (btn) -> {
+        this.categorySelector = Button.builder(Component.literal(currentCategory.getDisplayName()), (btn) -> {
             this.isDropdownOpen = !this.isDropdownOpen;
-        }).size(120, 20).build();
+        }).size(75, 20).build();
+
+        this.recipeTypeSelector = Button.builder(Component.literal(currentRecipeType.getDisplayName()), (btn) -> {
+            this.isTypeDropdownOpen = !this.isTypeDropdownOpen;
+        }).size(75, 20).build();
 
         this.overrideCheckbox = Checkbox.builder(Component.empty(), this.font)
                 .pos(0, 0)
@@ -127,12 +151,13 @@ public class EditorScreen extends Screen {
                 .onValueChange((cb, val) -> this.isShapeless = val)
                 .build();
 
-        this.saveButton = Button.builder(Component.literal("Save"), (btn) -> {
+        this.saveButton = Button.builder(Component.translatable("gui.simplyrecipes.save"), (btn) -> {
             this.saveRecipe();
         }).size(50, 20).build();
 
         this.addRenderableWidget(this.toggleButton);
-        this.addRenderableWidget(this.modeSelector);
+        this.addRenderableWidget(this.categorySelector);
+        this.addRenderableWidget(this.recipeTypeSelector);
         this.addRenderableWidget(this.overrideCheckbox);
         this.addRenderableWidget(this.shapelessCheckbox);
         this.addRenderableWidget(this.saveButton);
@@ -140,16 +165,53 @@ public class EditorScreen extends Screen {
         updateSearch("");
     }
 
-    private void setMode(Mode mode) {
-        this.currentMode = mode;
-        this.modeSelector.setMessage(Component.literal(mode.getDisplayName()));
-        if (this.processingTimeBox != null && isCookingMode()) {
-            this.processingTimeBox.setValue(String.valueOf(mode.getDefaultTicks()));
-        }
+    private void setCategory(Category category) {
+        this.currentCategory = category;
+        this.categorySelector.setMessage(Component.literal(category.getDisplayName()));
         this.isDropdownOpen = false;
     }
 
+    private void setRecipeType(RecipeType type) {
+        this.currentRecipeType = type;
+        this.recipeTypeSelector.setMessage(Component.literal(type.getDisplayName()));
+        if (this.processingTimeBox != null && isCookingMode()) {
+            this.processingTimeBox.setValue(String.valueOf(type.getDefaultTicks()));
+        }
+        this.isTypeDropdownOpen = false;
+    }
+
+    public void receiveDiscoveredRecipes(List<ProvideRecipesPayload.RecipeInfo> recipes) {
+        this.discoveredRecipes = recipes;
+        this.discoveryIndex = 0;
+        if (!recipes.isEmpty()) {
+            this.recipeNameBox.setValue(recipes.get(0).id().toString());
+        }
+    }
+
     private void saveRecipe() {
+        if (currentCategory == Category.REMOVE_RECIPE) {
+            if (discoveredRecipes.isEmpty()) return;
+            Identifier recipeId = discoveredRecipes.get(discoveryIndex).id();
+            JsonObject deletionJson = RecipeGenerator.createDeletionTemplate();
+
+            if (Minecraft.getInstance().getConnection() != null) {
+                Minecraft.getInstance().getConnection().send(new SaveRecipePayload(recipeId, GSON.toJson(deletionJson)));
+                Minecraft.getInstance().player.sendSystemMessage(Component.literal("§eDisabling recipe: §f" + recipeId.toString()));
+
+                // Remove the recipe from the local list to reflect it's gone
+                discoveredRecipes.remove(discoveryIndex);
+                if (discoveredRecipes.isEmpty()) {
+                    discoveryIndex = 0;
+                    this.recipeNameBox.setValue("");
+                } else {
+                    // Adjust index if we were at the end of the list
+                    discoveryIndex = Math.min(discoveryIndex, discoveredRecipes.size() - 1);
+                    this.recipeNameBox.setValue(discoveredRecipes.get(discoveryIndex).id().toString());
+                }
+            }
+            return;
+        }
+
         ItemStack resultStack = outputs.get(0).stack;
         if (resultStack.isEmpty()) {
             Minecraft.getInstance().player.sendSystemMessage(Component.literal("§cCannot save: Output is empty!"));
@@ -165,13 +227,13 @@ public class EditorScreen extends Screen {
         try {
             cookTime = Integer.parseInt(processingTimeBox.getValue());
         } catch (NumberFormatException e) {
-            cookTime = currentMode.getDefaultTicks();
+            cookTime = currentRecipeType.getDefaultTicks();
         }
 
-        switch (currentMode) {
+        switch (currentRecipeType) {
             case CRAFTING -> {
-                recipeJson = isShapeless ? 
-                        RecipeGenerator.createShapelessRecipeTemplate(resultId, resultStack.getCount(), getIngredientsFromGrid()) : 
+                recipeJson = isShapeless ?
+                        RecipeGenerator.createShapelessRecipeTemplate(resultId, resultStack.getCount(), getIngredientsFromGrid()) :
                         RecipeGenerator.createShapedRecipeTemplate(resultId, resultStack.getCount(), getShapedGridIngredients());
             }
             case SMELTING, BLASTING, SMOKING, CAMPFIRE_COOKING -> {
@@ -230,31 +292,44 @@ public class EditorScreen extends Screen {
             String[] parts = rawInput.split(":", 2);
             return Identifier.fromNamespaceAndPath(parts[0], parts[1].replaceAll("[^a-z0-9/._-]", ""));
         }
-        
+
         String fileName = rawInput.replaceAll("[^a-z0-9/._-]", "");
         if (fileName.isEmpty()) fileName = resultId.getPath() + "_custom";
         return Identifier.fromNamespaceAndPath(resultId.getNamespace(), fileName);
     }
 
     private String getCookingType() {
-        return switch(currentMode) {
+        return switch(currentRecipeType) {
                 case SMELTING -> "minecraft:smelting";
                 case BLASTING -> "minecraft:blasting";
                 case SMOKING -> "minecraft:smoking";
                 case CAMPFIRE_COOKING -> "minecraft:campfire_cooking";
-                default -> "minecraft:smelting";
+            default -> "minecraft:crafting";
             };
     }
 
+    private ItemStack getIconForRecipeType(String type) {
+        return switch (type) {
+            case "minecraft:crafting" -> RecipeType.CRAFTING.getStationStack();
+            case "minecraft:smelting" -> RecipeType.SMELTING.getStationStack();
+            case "minecraft:blasting" -> RecipeType.BLASTING.getStationStack();
+            case "minecraft:smoking" -> RecipeType.SMOKING.getStationStack();
+            case "minecraft:campfire_cooking" -> RecipeType.CAMPFIRE_COOKING.getStationStack();
+            case "minecraft:stonecutting" -> RecipeType.STONECUTTING.getStationStack();
+            case "minecraft:smithing" -> RecipeType.SMITHING.getStationStack();
+            default -> BuiltInRegistries.ITEM.get(Identifier.fromNamespaceAndPath("minecraft", "barrier")).map(ItemStack::new).orElse(ItemStack.EMPTY);
+        };
+    }
+
     private boolean isCookingMode() {
-        return currentMode == Mode.SMELTING || currentMode == Mode.BLASTING || 
-               currentMode == Mode.SMOKING || currentMode == Mode.CAMPFIRE_COOKING;
+        return currentRecipeType == RecipeType.SMELTING || currentRecipeType == RecipeType.BLASTING ||
+                currentRecipeType == RecipeType.SMOKING || currentRecipeType == RecipeType.CAMPFIRE_COOKING;
     }
 
     private void toggleSidebar() {
         this.isSidebarVisible = !this.isSidebarVisible;
         this.searchBox.visible = isSidebarVisible;
-        this.toggleButton.setMessage(Component.literal(isSidebarVisible ? "Close" : "Search"));
+        this.toggleButton.setMessage(Component.translatable(isSidebarVisible ? "gui.simplyrecipes.close" : "gui.simplyrecipes.search"));
     }
 
     private void updateSearch(String query) {
@@ -265,12 +340,12 @@ public class EditorScreen extends Screen {
             String tagPart = lowerQuery.substring(1);
             // Use getTags() to iterate through all available tags in the registry
             BuiltInRegistries.ITEM.getTags().forEach(tagNamed -> {
-                // In 1.21.3, getTags() returns HolderSet.Named. 
+                // In 1.21.3, getTags() returns HolderSet.Named.
                 // We extract the TagKey using .key()
                 TagKey<Item> tagKey = tagNamed.key();
-                
+
                 if (tagKey.location().toString().contains(tagPart)) {
-                    // Add the cycling tag entry first. 
+                    // Add the cycling tag entry first.
                     this.filteredItems.add(new SearchEntry(tagKey));
 
                     // Add each member separately
@@ -310,6 +385,7 @@ public class EditorScreen extends Screen {
 
     @Override
     public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float partialTick) {
+        this.hoveredIngredient = null;
         graphics.fill(0, 0, this.width, this.height, 0xCC000000);
         graphics.text(this.font, this.title, this.width / 2 - this.font.width(this.title) / 2, 10, 0xFFFFFF);
 
@@ -318,16 +394,22 @@ public class EditorScreen extends Screen {
 
         renderWorkstationBackground(graphics, centerX, centerY);
 
-        this.modeSelector.setX(centerX - 60);
-        this.modeSelector.setY(centerY - 75);
+        this.categorySelector.setX(centerX - 77);
+        this.categorySelector.setY(centerY - 75);
+
+        this.recipeTypeSelector.setX(centerX + 2);
+        this.recipeTypeSelector.setY(centerY - 75);
+        this.recipeTypeSelector.visible = currentCategory == Category.ADD_RECIPE;
+
+        boolean isRemoveMode = currentCategory == Category.REMOVE_RECIPE;
 
         this.overrideCheckbox.setX(centerX - 75);
         this.overrideCheckbox.setY(centerY + 15);
-        this.overrideCheckbox.visible = true;
+        this.overrideCheckbox.visible = !isRemoveMode;
 
         this.shapelessCheckbox.setX(centerX - 75);
         this.shapelessCheckbox.setY(centerY + 35);
-        this.shapelessCheckbox.visible = (currentMode == Mode.CRAFTING);
+        this.shapelessCheckbox.visible = currentCategory == Category.ADD_RECIPE && currentRecipeType == RecipeType.CRAFTING;
 
         this.processingTimeBox.setX(centerX - 75);
         this.processingTimeBox.setY(centerY + 35);
@@ -335,12 +417,43 @@ public class EditorScreen extends Screen {
 
         this.recipeNameBox.setX(centerX - 75);
         this.recipeNameBox.setY(centerY + 55);
-        this.recipeNameBox.visible = !isOverride;
+        this.recipeNameBox.visible = !isOverride || isRemoveMode;
 
         this.saveButton.setX(centerX + 25);
         this.saveButton.setY(centerY + 55);
 
-        if (currentMode == Mode.CRAFTING) {
+        // Update Save Button Text based on mode
+        this.saveButton.setMessage(currentCategory == Category.REMOVE_RECIPE
+                ? Component.literal("Remove")
+            : Component.translatable("gui.simplyrecipes.save"));
+
+        if (isRemoveMode) {
+            if (discoveredRecipes.isEmpty()) {
+                String line1 = "Select an item";
+                String line2 = "to lookup recipes";
+                graphics.text(this.font, Component.literal(line1), centerX - (this.font.width(line1) / 2), centerY - 15, 0xFF3F3F3F, false);
+                graphics.text(this.font, Component.literal(line2), centerX - (this.font.width(line2) / 2), centerY - 5, 0xFF3F3F3F, false);
+            } else {
+                ProvideRecipesPayload.RecipeInfo current = discoveredRecipes.get(discoveryIndex);
+                
+                String countText = "Recipe " + (discoveryIndex + 1) + " of " + discoveredRecipes.size();
+                // Strip "minecraft:" from type for cleaner display
+                String typeText = current.type().replace("minecraft:", "");
+                
+                graphics.text(this.font, Component.literal(countText), centerX - (this.font.width(countText) / 2), centerY - 35, 0xFF3F3F3F, false);
+                graphics.text(this.font, Component.literal(typeText), centerX - (this.font.width(typeText) / 2), centerY - 25, 0xFF3F3F3F, false);
+
+                // Draw cycle buttons
+                graphics.fill(centerX - 75, centerY - 10, centerX - 55, centerY + 5, 0xFF707070);
+                graphics.text(this.font, Component.literal("<"), centerX - 70, centerY - 6, 0xFFFFFFFF);
+
+                graphics.fill(centerX + 55, centerY - 10, centerX + 75, centerY + 5, 0xFF707070);
+                graphics.text(this.font, Component.literal(">"), centerX + 62, centerY - 6, 0xFFFFFFFF);
+
+                // Draw Station Icon for the recipe type if possible, otherwise barrier
+                graphics.fakeItem(getIconForRecipeType(current.type()), centerX - 8, centerY - 15);
+            }
+        } else if (currentRecipeType == RecipeType.CRAFTING) {
             renderVanillaLayout(graphics, centerX, centerY, mouseX, mouseY);
         } else {
             renderMachineLayout(graphics, centerX, centerY, mouseX, mouseY);
@@ -355,12 +468,31 @@ public class EditorScreen extends Screen {
 
         if (this.recipeNameBox.visible) this.recipeNameBox.extractRenderState(graphics, mouseX, mouseY, partialTick);
         this.saveButton.extractRenderState(graphics, mouseX, mouseY, partialTick);
+        if (isTypeDropdownOpen) {
+            renderTypeDropdownList(graphics, mouseX, mouseY);
+        }
 
         if (isDropdownOpen) {
             renderDropdownList(graphics, mouseX, mouseY);
         }
 
         renderIngredient(graphics, draggedItem, mouseX - 8, mouseY - 8);
+
+        // Render Tooltip at the very end so it's on top of everything
+        if (draggedItem.isEmpty() && hoveredIngredient != null && !hoveredIngredient.isEmpty()) {
+            if (hoveredIngredient.isTag) {
+                List<Component> components = List.of(Component.literal("#" + hoveredIngredient.tag.location().toString()));
+                List<ClientTooltipComponent> tooltipLines = components.stream()
+                        .map(c -> ClientTooltipComponent.create(c.getVisualOrderText()))
+                        .collect(Collectors.toList());
+                graphics.tooltip(this.font, tooltipLines, mouseX, mouseY, DefaultTooltipPositioner.INSTANCE, null);
+            } else {
+                List<ClientTooltipComponent> tooltipLines = this.getTooltipFromItem(Minecraft.getInstance(), hoveredIngredient.stack).stream()
+                        .map(c -> ClientTooltipComponent.create(c.getVisualOrderText()))
+                        .collect(Collectors.toList());
+                graphics.tooltip(this.font, tooltipLines, mouseX, mouseY, DefaultTooltipPositioner.INSTANCE, null);
+            }
+        }
     }
 
     private void renderIngredient(GuiGraphicsExtractor graphics, IngredientHolder ingredient, int x, int y) {
@@ -379,18 +511,19 @@ public class EditorScreen extends Screen {
     private void renderConfigurationRows(GuiGraphicsExtractor graphics, int centerX, int centerY, int mouseX, int mouseY, float partialTick) {
         if (this.overrideCheckbox.visible) {
             this.overrideCheckbox.extractRenderState(graphics, mouseX, mouseY, partialTick);
-            graphics.text(this.font, Component.literal("Override Existing"), centerX - 50, centerY + 20, 0xFF3F3F3F, false);
+            graphics.text(this.font, Component.translatable("gui.simplyrecipes.override"), centerX - 50, centerY + 20, 0xFF3F3F3F, false);
         }
         if (this.shapelessCheckbox.visible) {
             this.shapelessCheckbox.extractRenderState(graphics, mouseX, mouseY, partialTick);
-            graphics.text(this.font, Component.literal("Shapeless"), centerX - 50, centerY + 40, 0xFF3F3F3F, false);
+            graphics.text(this.font, Component.translatable("gui.simplyrecipes.shapeless"), centerX - 50, centerY + 40, 0xFF3F3F3F, false);
         }
         if (this.processingTimeBox.visible) {
             this.processingTimeBox.extractRenderState(graphics, mouseX, mouseY, partialTick);
-            graphics.text(this.font, Component.literal("Ticks"), centerX - 30, centerY + 40, 0xFF3F3F3F, false);
+            graphics.text(this.font, Component.translatable("gui.simplyrecipes.ticks"), centerX - 30, centerY + 40, 0xFF3F3F3F, false);
         }
         this.toggleButton.extractRenderState(graphics, mouseX, mouseY, partialTick);
-        this.modeSelector.extractRenderState(graphics, mouseX, mouseY, partialTick);
+        this.categorySelector.extractRenderState(graphics, mouseX, mouseY, partialTick);
+        if (this.recipeTypeSelector.visible) this.recipeTypeSelector.extractRenderState(graphics, mouseX, mouseY, partialTick);
     }
 
     private void renderWorkstationBackground(GuiGraphicsExtractor graphics, int centerX, int centerY) {
@@ -405,12 +538,29 @@ public class EditorScreen extends Screen {
     }
 
     private void renderDropdownList(GuiGraphicsExtractor graphics, int mouseX, int mouseY) {
-        int x = this.modeSelector.getX();
-        int y = this.modeSelector.getY() + 20;
-        int width = this.modeSelector.getWidth();
+        int x = this.categorySelector.getX();
+        int y = this.categorySelector.getY() + 20;
+        int width = this.categorySelector.getWidth();
 
-        Mode[] modes = Mode.values();
-        int visibleCount = Math.min(modes.length, MAX_DROPDOWN_VISIBLE);
+        Category[] categories = Category.values();
+        int visibleCount = categories.length;
+        int height = visibleCount * 20;
+
+        graphics.fill(x, y, x + width, y + height, 0xFF202020);
+        for (int i = 0; i < categories.length; i++) {
+            int itemY = y + (i * 20);
+            boolean hovered = mouseX >= x && mouseX <= x + width && mouseY >= itemY && mouseY <= itemY + 20;
+            graphics.text(this.font, Component.literal(categories[i].getDisplayName()), x + 5, itemY + 6, hovered ? 0xFFFFFFA0 : 0xFFFFFFFF);
+        }
+    }
+
+    private void renderTypeDropdownList(GuiGraphicsExtractor graphics, int mouseX, int mouseY) {
+        int x = this.recipeTypeSelector.getX();
+        int y = this.recipeTypeSelector.getY() + 20;
+        int width = this.recipeTypeSelector.getWidth();
+
+        RecipeType[] types = RecipeType.values();
+        int visibleCount = Math.min(types.length, MAX_DROPDOWN_VISIBLE);
         int height = visibleCount * 20;
 
         graphics.fill(x, y, x + width, y + height, 0xFF202020);
@@ -420,11 +570,11 @@ public class EditorScreen extends Screen {
 
         for (int i = 0; i < visibleCount; i++) {
             int index = i + dropdownScroll;
-            if (index >= modes.length) break;
+            if (index >= types.length) break;
 
             int itemY = y + (i * 20);
             boolean hovered = mouseX >= x && mouseX <= x + width && mouseY >= itemY && mouseY <= itemY + 20;
-            graphics.text(this.font, Component.literal(modes[index].getDisplayName()), x + 5, itemY + 6, hovered ? 0xFFFFFFA0 : 0xFFFFFFFF);
+            graphics.text(this.font, Component.literal(types[index].getDisplayName()), x + 5, itemY + 6, hovered ? 0xFFFFFFA0 : 0xFFFFFFFF);
         }
     }
 
@@ -445,9 +595,10 @@ public class EditorScreen extends Screen {
             int y = startY + (i / columns) * 20;
 
             SearchEntry entry = filteredItems.get(idx);
-            drawSlot(graphics, x, y, mouseX, mouseY);
+            IngredientHolder content = entry.toHolder();
 
-            renderIngredient(graphics, entry.toHolder(), x + 1, y + 1);
+            drawSlot(graphics, x, y, mouseX, mouseY, content);
+            renderIngredient(graphics, content, x + 1, y + 1);
         }
     }
 
@@ -459,41 +610,74 @@ public class EditorScreen extends Screen {
             for (int col = 0; col < 3; col++) {
                 int slotX = startX + (col * 20);
                 int slotY = startY + (row * 20);
-                drawSlot(graphics, slotX, slotY, mouseX, mouseY);
-                renderIngredient(graphics, inputs[row * 3 + col], slotX + 1, slotY + 1);
+                IngredientHolder content = inputs[row * 3 + col];
+                drawSlot(graphics, slotX, slotY, mouseX, mouseY, content);
+                renderIngredient(graphics, content, slotX + 1, slotY + 1);
             }
         }
 
-        graphics.fakeItem(currentMode.getStationStack(), centerX + 15, centerY - 29);
+        graphics.fakeItem(currentRecipeType.getStationStack(), centerX + 15, centerY - 29);
+        drawArrow(graphics, centerX + 14, centerY - 1);
 
-        drawSlot(graphics, centerX + 35, centerY - 30, mouseX, mouseY);
-        graphics.fakeItem(outputs.get(0).stack, centerX + 36, centerY - 29);
+        IngredientHolder outputHolder = new IngredientHolder();
+        outputHolder.set(outputs.get(0).stack);
+
+        drawSlot(graphics, centerX + 35, centerY - 10, mouseX, mouseY, outputHolder);
+        graphics.fakeItem(outputHolder.stack, centerX + 36, centerY - 9);
     }
 
     private void renderMachineLayout(GuiGraphicsExtractor graphics, int centerX, int centerY, int mouseX, int mouseY) {
         int outputX = centerX + 20;
 
-        if (currentMode == Mode.SMITHING) {
-            drawSlot(graphics, centerX - 60, centerY - 30, mouseX, mouseY);
+        if (currentRecipeType == RecipeType.SMITHING) {
+            drawSlot(graphics, centerX - 60, centerY - 10, mouseX, mouseY, inputs[0]);
             renderIngredient(graphics, inputs[0], centerX - 59, centerY - 29);
 
-            drawSlot(graphics, centerX - 40, centerY - 30, mouseX, mouseY);
+            drawSlot(graphics, centerX - 40, centerY - 10, mouseX, mouseY, inputs[1]);
             renderIngredient(graphics, inputs[1], centerX - 39, centerY - 29);
 
-            drawSlot(graphics, centerX - 20, centerY - 30, mouseX, mouseY);
+            drawSlot(graphics, centerX - 20, centerY - 10, mouseX, mouseY, inputs[2]);
             renderIngredient(graphics, inputs[2], centerX - 19, centerY - 29);
 
-            graphics.fakeItem(currentMode.getStationStack(), centerX + 7, centerY - 29);
+            graphics.fakeItem(currentRecipeType.getStationStack(), centerX + 7, centerY - 29);
+            drawArrow(graphics, centerX + 6, centerY - 1);
             outputX = centerX + 30;
         } else {
-            drawSlot(graphics, centerX - 30, centerY - 30, mouseX, mouseY);
+            drawSlot(graphics, centerX - 30, centerY - 10, mouseX, mouseY, inputs[0]);
             renderIngredient(graphics, inputs[0], centerX - 29, centerY - 29);
 
-            graphics.fakeItem(currentMode.getStationStack(), centerX - 5, centerY - 29);
+            graphics.fakeItem(currentRecipeType.getStationStack(), centerX - 5, centerY - 29);
+            drawArrow(graphics, centerX - 6, centerY - 1);
         }
 
-        drawSlot(graphics, outputX, centerY - 30, mouseX, mouseY);
-        graphics.fakeItem(outputs.get(0).stack, outputX + 1, centerY - 29);
+        IngredientHolder outputHolder = new IngredientHolder();
+        outputHolder.set(outputs.get(0).stack);
+
+        drawSlot(graphics, outputX, centerY - 10, mouseX, mouseY, outputHolder);
+        graphics.fakeItem(outputHolder.stack, outputX + 1, centerY - 9);
+    }
+
+    private void drawSlot(GuiGraphicsExtractor graphics, int x, int y, int mouseX, int mouseY, IngredientHolder content) {
+        graphics.fill(x, y, x + 18, y + 18, 0xFFBDBDBD);
+        graphics.fill(x, y, x + 18, y + 1, 0xFF707070);
+        graphics.fill(x, y, x + 1, y + 18, 0xFF707070);
+
+        if (mouseX >= x && mouseX <= x + 18 && mouseY >= y && mouseY <= y + 18) {
+            graphics.fill(x, y, x + 18, y + 18, 0x80FFFFFF);
+            this.hoveredIngredient = content;
+        }
+    }
+
+    private void drawArrow(GuiGraphicsExtractor graphics, int x, int y) {
+        // The line is now 18px long and perfectly centered vertically on 'y'
+        graphics.fill(x, y - 1, x + 18, y + 1, 0xFFFFFFFF);
+
+        // Larger, more proportionate Arrow head (11px tall, 5px wide)
+        graphics.fill(x + 13, y - 5, x + 14, y + 5, 0xFFFFFFFF);
+        graphics.fill(x + 14, y - 4, x + 15, y + 4, 0xFFFFFFFF);
+        graphics.fill(x + 15, y - 3, x + 16, y + 3, 0xFFFFFFFF);
+        graphics.fill(x + 16, y - 2, x + 17, y + 2, 0xFFFFFFFF);
+        graphics.fill(x + 17, y - 1, x + 18, y + 1, 0xFFFFFFFF);
     }
 
     @Override
@@ -502,24 +686,43 @@ public class EditorScreen extends Screen {
         double mouseY = event.y();
         int button = event.button();
 
-        if (isDropdownOpen) {
-            int dx = this.modeSelector.getX();
-            int dy = this.modeSelector.getY() + 20;
-            int dw = this.modeSelector.getWidth();
-            Mode[] modes = Mode.values();
-            int visibleCount = Math.min(modes.length, MAX_DROPDOWN_VISIBLE);
+        int centerX = isSidebarVisible ? (this.width + 120) / 2 : this.width / 2;
+        int centerY = this.height / 2;
+        boolean isRemoveMode = currentCategory == Category.REMOVE_RECIPE;
 
+        if (isTypeDropdownOpen) {
+            int dx = this.recipeTypeSelector.getX();
+            int dy = this.recipeTypeSelector.getY() + 20;
+            int dw = this.recipeTypeSelector.getWidth();
+            RecipeType[] types = RecipeType.values();
+            int visibleCount = Math.min(types.length, MAX_DROPDOWN_VISIBLE);
             int dh = visibleCount * 20;
             if (mouseX >= dx && mouseX <= dx + dw && mouseY >= dy && mouseY <= dy + dh) {
                 int clickedIndex = (int)((mouseY - dy) / 20) + dropdownScroll;
-                if (clickedIndex < modes.length) {
-                    setMode(modes[clickedIndex]);
+                if (clickedIndex < types.length) {
+                    setRecipeType(types[clickedIndex]);
                     return true;
                 }
-            } else {
-                if (!(mouseX >= dx && mouseX <= dx + dw && mouseY >= dy - 20 && mouseY <= dy)) {
-                    this.isDropdownOpen = false;
+            } else if (!(mouseX >= dx && mouseX <= dx + dw && mouseY >= dy - 20 && mouseY <= dy)) {
+                this.isTypeDropdownOpen = false;
+            }
+        }
+
+        if (isDropdownOpen) {
+            int dx = this.categorySelector.getX();
+            int dy = this.categorySelector.getY() + 20;
+            int dw = this.categorySelector.getWidth();
+            Category[] categories = Category.values();
+            int dh = categories.length * 20;
+
+            if (mouseX >= dx && mouseX <= dx + dw && mouseY >= dy && mouseY <= dy + dh) {
+                int clickedIndex = (int)((mouseY - dy) / 20);
+                if (clickedIndex < categories.length) {
+                    setCategory(categories[clickedIndex]);
+                    return true;
                 }
+            } else if (!(mouseX >= dx && mouseX <= dx + dw && mouseY >= dy - 20 && mouseY <= dy)) {
+                this.isDropdownOpen = false;
             }
         }
 
@@ -540,7 +743,8 @@ public class EditorScreen extends Screen {
         }
 
         if (this.toggleButton.mouseClicked(event, doubleClicked)) return true;
-        if (this.modeSelector.mouseClicked(event, doubleClicked)) return true;
+        if (this.categorySelector.mouseClicked(event, doubleClicked)) return true;
+        if (this.recipeTypeSelector.visible && this.recipeTypeSelector.mouseClicked(event, doubleClicked)) return true;
         if (this.overrideCheckbox.visible && this.overrideCheckbox.mouseClicked(event, doubleClicked)) return true;
         if (this.shapelessCheckbox.visible && this.shapelessCheckbox.mouseClicked(event, doubleClicked)) return true;
         if (this.saveButton.mouseClicked(event, doubleClicked)) return true;
@@ -553,21 +757,41 @@ public class EditorScreen extends Screen {
             for (int i = 0; i < columns * rows; i++) {
                 int x = startX + (i % columns) * 20;
                 int y = startY + (i / columns) * 20;
-            if (mouseX >= x && mouseX <= (x + 18) && mouseY >= y && mouseY <= (y + 18)) {
-                int idx = i + scrollOffset;
-                if (idx < filteredItems.size()) {
-                    SearchEntry entry = filteredItems.get(idx);
-                    this.draggedItem = entry.toHolder();
-                    return true;
+                if (mouseX >= x && mouseX <= (x + 18) && mouseY >= y && mouseY <= (y + 18)) {
+                    int idx = i + scrollOffset;
+                    if (idx < filteredItems.size()) {
+                        SearchEntry entry = filteredItems.get(idx);
+                        if (currentCategory == Category.REMOVE_RECIPE) {
+                            // Request recipes for this item from the server
+                            Identifier id = entry.isTag ? entry.tag().location() : BuiltInRegistries.ITEM.getKey(entry.stack().getItem());
+                            if (Minecraft.getInstance().getConnection() != null) {
+                                Minecraft.getInstance().getConnection().send(new RequestRecipesPayload(id));
+                            }
+                        } else {
+                            this.draggedItem = entry.toHolder();
+                        }
+                        return true;
+                    }
                 }
-            }
             }
         }
 
-        int centerX = isSidebarVisible ? (this.width + 120) / 2 : this.width / 2;
-        int centerY = this.height / 2;
+        if (isRemoveMode && !discoveredRecipes.isEmpty()) {
+            if (mouseY >= centerY - 10 && mouseY <= centerY + 5) {
+                if (mouseX >= centerX - 75 && mouseX <= centerX - 55) {
+                    discoveryIndex = (discoveryIndex <= 0) ? discoveredRecipes.size() - 1 : discoveryIndex - 1;
+                    this.recipeNameBox.setValue(discoveredRecipes.get(discoveryIndex).id().toString());
+                    return true;
+                }
+                if (mouseX >= centerX + 55 && mouseX <= centerX + 75) {
+                    discoveryIndex = (discoveryIndex + 1) % discoveredRecipes.size();
+                    this.recipeNameBox.setValue(discoveredRecipes.get(discoveryIndex).id().toString());
+                    return true;
+                }
+            }
+        }
 
-        if (currentMode == Mode.CRAFTING) {
+        if (currentCategory == Category.ADD_RECIPE && currentRecipeType == RecipeType.CRAFTING) {
             int gridX = centerX - 50;
             int gridY = centerY - 50;
             for (int i = 0; i < 9; i++) {
@@ -578,7 +802,7 @@ public class EditorScreen extends Screen {
                     return true;
                 }
             }
-        } else if (currentMode == Mode.SMITHING) {
+        } else if (currentCategory == Category.ADD_RECIPE && currentRecipeType == RecipeType.SMITHING) {
             for (int i = 0; i < 3; i++) {
                 int x = centerX - 60 + (i * 20);
                 int y = centerY - 30;
@@ -587,7 +811,7 @@ public class EditorScreen extends Screen {
                     return true;
                 }
             }
-        } else {
+        } else if (currentCategory == Category.ADD_RECIPE) {
             int x = centerX - 30;
             int y = centerY - 30;
             if (mouseX >= x && mouseX <= (x + 18) && mouseY >= y && mouseY <= (y + 18)) {
@@ -596,18 +820,20 @@ public class EditorScreen extends Screen {
             }
         }
 
-        int outputStartX = (currentMode == Mode.CRAFTING) ? centerX + 35 : (currentMode == Mode.SMITHING ? centerX + 30 : centerX + 20);
-        int outputY = centerY - 30;
-        if (mouseX >= outputStartX && mouseX <= (outputStartX + 18) && mouseY >= outputY && mouseY <= (outputY + 18)) {
-            if (button == 1) {
-                outputs.get(0).stack = ItemStack.EMPTY; // Result still requires specific item
-                this.recipeNameBox.setValue("");
-            } else if (!draggedItem.isEmpty() && !draggedItem.isTag) {
-                outputs.get(0).stack = draggedItem.stack.copy();
-                Identifier id = BuiltInRegistries.ITEM.getKey(outputs.get(0).stack.getItem());
-                if (id != null) this.recipeNameBox.setValue(id.toString());
+        if (currentCategory == Category.ADD_RECIPE) {
+            int outputStartX = (currentRecipeType == RecipeType.CRAFTING) ? centerX + 35 : (currentRecipeType == RecipeType.SMITHING ? centerX + 30 : centerX + 20);
+            int outputY = centerY - 30;
+            if (mouseX >= outputStartX && mouseX <= (outputStartX + 18) && mouseY >= outputY && mouseY <= (outputY + 18)) {
+                if (button == 1) {
+                    outputs.get(0).stack = ItemStack.EMPTY; // Result still requires specific item
+                    this.recipeNameBox.setValue("");
+                } else if (!draggedItem.isEmpty() && !draggedItem.isTag) {
+                    outputs.get(0).stack = draggedItem.stack.copy();
+                    Identifier id = BuiltInRegistries.ITEM.getKey(outputs.get(0).stack.getItem());
+                    if (id != null) this.recipeNameBox.setValue(id.toString());
+                }
+                return true;
             }
-            return true;
         }
 
         handleExternalDrag();
@@ -660,8 +886,15 @@ public class EditorScreen extends Screen {
 
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
-        if (isDropdownOpen && mouseX >= this.modeSelector.getX() && mouseX <= this.modeSelector.getX() + this.modeSelector.getWidth()) {
-            int maxScroll = Math.max(0, Mode.values().length - MAX_DROPDOWN_VISIBLE);
+        if (isTypeDropdownOpen && mouseX >= this.recipeTypeSelector.getX() && mouseX <= this.recipeTypeSelector.getX() + this.recipeTypeSelector.getWidth()) {
+            int maxScroll = Math.max(0, RecipeType.values().length - MAX_DROPDOWN_VISIBLE);
+            if (scrollY > 0) dropdownScroll = Math.max(0, dropdownScroll - 1);
+            else if (scrollY < 0) dropdownScroll = Math.min(maxScroll, dropdownScroll + 1);
+            return true;
+        }
+
+        if (isDropdownOpen && mouseX >= this.categorySelector.getX() && mouseX <= this.categorySelector.getX() + this.categorySelector.getWidth()) {
+            int maxScroll = Math.max(0, Category.values().length - MAX_DROPDOWN_VISIBLE);
             if (scrollY > 0) dropdownScroll = Math.max(0, dropdownScroll - 1);
             else if (scrollY < 0) dropdownScroll = Math.min(maxScroll, dropdownScroll + 1);
             return true;
@@ -677,16 +910,6 @@ public class EditorScreen extends Screen {
             return true;
         }
         return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
-    }
-
-    private void drawSlot(GuiGraphicsExtractor graphics, int x, int y, int mouseX, int mouseY) {
-        graphics.fill(x, y, x + 18, y + 18, 0xFFBDBDBD);
-        graphics.fill(x, y, x + 18, y + 1, 0xFF707070);
-        graphics.fill(x, y, x + 1, y + 18, 0xFF707070);
-
-        if (mouseX >= x && mouseX <= x + 18 && mouseY >= y && mouseY <= y + 18) {
-            graphics.fill(x, y, x + 18, y + 18, 0x80FFFFFF);
-        }
     }
 
     private static class IngredientHolder {
