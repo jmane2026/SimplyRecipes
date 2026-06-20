@@ -74,9 +74,9 @@ public class SimplyRecipes {
     private void onKeyInput(InputEvent.Key event) {
         if (EDITOR_KEY.consumeClick()) {
             Minecraft mc = Minecraft.getInstance();
-            if (mc.player != null && mc.screen == null) {
+            if (mc.player != null && mc.gui.screen() == null) {
                 Identifier defaultId = Identifier.fromNamespaceAndPath("minecraft", "air");
-                mc.execute(() -> mc.setScreen(new EditorScreen(defaultId)));
+                mc.execute(() -> mc.gui.setScreen(new EditorScreen(defaultId)));
             }
         }
     }

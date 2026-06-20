@@ -49,7 +49,7 @@ public class NetworkHandler {
 
     public static void handleProvideRecipes(final ProvideRecipesPayload payload, final IPayloadContext context) {
         context.enqueueWork(() -> {
-            if (Minecraft.getInstance().screen instanceof EditorScreen screen) {
+            if (Minecraft.getInstance().gui.screen() instanceof EditorScreen screen) {
                 screen.receiveDiscoveredRecipes(payload.recipes());
             }
         });
