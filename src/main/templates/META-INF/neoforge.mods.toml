@@ -11,6 +11,8 @@ description='''
 A recipe editor/loader mod for Minecraft 26.1+.
 '''
 
+logoFile = "logo.png"
+
 [[dependencies.mod_id]]
     modId="neoforge"
     type="required"
