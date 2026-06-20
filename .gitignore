@@ -38,3 +38,12 @@ run/
 **/src/generated/**/.cache/
 repo/
 !**/src/**/repo/
+
+# Local AI Assistant Configuration Files
+.aiignore
+.aiassistant/rules/rules.md
+.cursorrules
+
+# Local AI Assistant Configuration Files
+.aiignore
+.aiassistant/
