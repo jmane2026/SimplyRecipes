@@ -867,6 +867,7 @@ public class EditorScreen extends Screen {
         this.saveButton.setMessage(saveLabel);
 
         if (isRemoveMode) {
+            this.processingTimeBox.visible = false;
             if (discoveredRecipes.isEmpty()) {
                 String line1 = "Select an item";
                 String line2 = "to lookup recipes";
