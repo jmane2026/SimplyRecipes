@@ -92,7 +92,7 @@ public class RecipeGenerator {
         return json;
     }
 
-    public static JsonObject createCookingRecipeTemplate(String type, Identifier resultId, String ingredient, int cookingTime, float experience) {
+    public static JsonObject createCookingRecipeTemplate(String type, Identifier resultId, int count, String ingredient, int cookingTime, float experience) {
         JsonObject json = new JsonObject();
         json.addProperty("type", type);
 
@@ -100,6 +100,7 @@ public class RecipeGenerator {
 
         JsonObject result = new JsonObject();
         result.addProperty("id", resultId.toString());
+        result.addProperty("count", count);
         json.add("result", result);
 
         json.addProperty("experience", experience);
@@ -120,7 +121,7 @@ public class RecipeGenerator {
         return json;
     }
 
-    public static JsonObject createSmithingRecipeTemplate(Identifier resultId, String template, String base, String addition) {
+    public static JsonObject createSmithingRecipeTemplate(Identifier resultId, int count, String template, String base, String addition) {
         JsonObject json = new JsonObject();
         json.addProperty("type", "minecraft:smithing_transform");
 
@@ -130,6 +131,7 @@ public class RecipeGenerator {
 
         JsonObject result = new JsonObject();
         result.addProperty("id", resultId.toString());
+        result.addProperty("count", count);
         json.add("result", result);
 
         return json;
