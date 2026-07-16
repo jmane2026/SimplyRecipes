@@ -154,6 +154,7 @@ public class EditorScreen extends Screen {
     private EditBox attackDamageBox;
     private EditBox attackSpeedBox;
     private EditBox searchBox;
+    private EditBox outputCountBox;
     private List<SearchEntry> filteredItems = new ArrayList<>();
     private Button toggleButton;
     private boolean isSidebarVisible = true;
@@ -188,6 +189,10 @@ public class EditorScreen extends Screen {
         this.recipeNameBox.setValue(targetItem.toString());
         this.recipeNameBox.setMaxLength(128);
         this.addRenderableWidget(this.recipeNameBox);
+
+        this.outputCountBox = new EditBox(this.font, 0, 0, 30, 20, Component.literal("Count"));
+        this.outputCountBox.setValue("1");
+        this.addRenderableWidget(this.outputCountBox);
 
         this.itemDisplayNameBox = new EditBox(this.font, 0, 0, 100, 20, Component.literal("Display Name"));
         this.itemDisplayNameBox.setValue("New Item");
@@ -507,28 +512,33 @@ public class EditorScreen extends Screen {
             cookTime = currentRecipeType.getDefaultTicks();
         }
 
+        int count = 1;
+        try {
+            count = Integer.parseInt(outputCountBox.getValue());
+        } catch (NumberFormatException ignored) {}
+
         switch (currentRecipeType) {
             case CRAFTING -> {
                 recipeJson = isShapeless ?
-                        RecipeGenerator.createShapelessRecipeTemplate(resultId, resultStack.getCount(), getIngredientsFromGrid()) :
-                        RecipeGenerator.createShapedRecipeTemplate(resultId, resultStack.getCount(), getShapedGridIngredients());
+                        RecipeGenerator.createShapelessRecipeTemplate(resultId, count, getIngredientsFromGrid()) :
+                        RecipeGenerator.createShapedRecipeTemplate(resultId, count, getShapedGridIngredients());
             }
             case SMELTING, BLASTING, SMOKING, CAMPFIRE_COOKING -> {
                 if (inputs[0].isEmpty()) return;
                 String ingredient = inputs[0].getJsonName();
-                recipeJson = RecipeGenerator.createCookingRecipeTemplate(getCookingType(), resultId, ingredient, cookTime, 0.1f);
+                recipeJson = RecipeGenerator.createCookingRecipeTemplate(getCookingType(), resultId, count, ingredient, cookTime, 0.1f);
             }
             case STONECUTTING -> {
                 if (inputs[0].isEmpty()) return;
                 String ingredient = inputs[0].getJsonName();
-                recipeJson = RecipeGenerator.createStonecuttingRecipeTemplate(resultId, resultStack.getCount(), ingredient);
+                recipeJson = RecipeGenerator.createStonecuttingRecipeTemplate(resultId, count, ingredient);
             }
             case SMITHING -> {
                 if (inputs[0].isEmpty() || inputs[1].isEmpty() || inputs[2].isEmpty()) return;
                 String template = inputs[0].getJsonName();
                 String base = inputs[1].getJsonName();
                 String addition = inputs[2].getJsonName();
-                recipeJson = RecipeGenerator.createSmithingRecipeTemplate(resultId, template, base, addition);
+                recipeJson = RecipeGenerator.createSmithingRecipeTemplate(resultId, count, template, base, addition);
             }
         }
 
@@ -703,8 +713,12 @@ public class EditorScreen extends Screen {
         this.processingTimeBox.setY(centerY + 35);
         this.processingTimeBox.visible = isCookingMode();
 
+        this.outputCountBox.setX(centerX - 75);
+        this.outputCountBox.setY(centerY + 55);
+        this.outputCountBox.visible = currentCategory == Category.ADD_RECIPE;
+
         this.saveButton.setX(centerX + 25);
-        this.saveButton.setY(centerY + 55);
+        this.saveButton.setY(centerY + 80);
 
         if (isItemMode) {
             int listX = centerX - 165;
@@ -837,9 +851,9 @@ public class EditorScreen extends Screen {
         } else {
             this.recipeNameBox.setWidth(100);
             this.recipeNameBox.setX(centerX - 75); 
-            this.recipeNameBox.setY(centerY + 55);
+            this.recipeNameBox.setY(centerY + 80);
             this.saveButton.setX(centerX + 25);
-            this.saveButton.setY(centerY + 55);
+            this.saveButton.setY(centerY + 80);
             this.recipeNameBox.visible = !isOverride || isRemoveMode;
             this.itemDisplayNameBox.visible = false;
             this.maxStackSizeBox.visible = false;
@@ -930,6 +944,7 @@ public class EditorScreen extends Screen {
         if (this.miningSpeedBox.visible) this.miningSpeedBox.extractRenderState(graphics, mouseX, mouseY, partialTick);
         if (this.burnTimeBox.visible) this.burnTimeBox.extractRenderState(graphics, mouseX, mouseY, partialTick);
         if (this.loreBox.visible) this.loreBox.extractRenderState(graphics, mouseX, mouseY, partialTick);
+        if (this.outputCountBox.visible) this.outputCountBox.extractRenderState(graphics, mouseX, mouseY, partialTick);
         if (this.itemDisplayNameBox.visible) this.itemDisplayNameBox.extractRenderState(graphics, mouseX, mouseY, partialTick);
         if (this.raritySelector.visible) this.raritySelector.extractRenderState(graphics, mouseX, mouseY, partialTick);
         this.saveButton.extractRenderState(graphics, mouseX, mouseY, partialTick);
@@ -976,6 +991,9 @@ public class EditorScreen extends Screen {
         if (this.processingTimeBox.visible) {
             this.processingTimeBox.extractRenderState(graphics, mouseX, mouseY, partialTick);
             graphics.text(this.font, Component.translatable("gui.simplyrecipes.ticks"), centerX - 30, centerY + 40, 0xFF3F3F3F, false);
+        }
+        if (this.outputCountBox.visible && !isItemMode) {
+            graphics.text(this.font, Component.literal("Qty"), this.outputCountBox.getX() + 35, this.outputCountBox.getY() + 6, 0xFF3F3F3F, false);
         }
 
         if (isItemMode) {
@@ -1339,6 +1357,13 @@ public class EditorScreen extends Screen {
             }
         }
 
+        if (this.outputCountBox.visible) {
+            if (this.outputCountBox.mouseClicked(event, doubleClicked)) {
+                this.setFocused(this.outputCountBox);
+                return true;
+            }
+        }
+
         if (this.itemDisplayNameBox.visible) {
             boolean handled = this.itemDisplayNameBox.mouseClicked(event, doubleClicked);
             if (handled) {
@@ -1504,12 +1529,14 @@ public class EditorScreen extends Screen {
                 if (button == 1) {
                     outputs.get(0).stack = ItemStack.EMPTY;
                     this.recipeNameBox.setValue("");
+                    this.outputCountBox.setValue("1");
                 } else {
                     ItemStack toPlace = !draggedItem.isEmpty() ? draggedItem.stack : Minecraft.getInstance().player.containerMenu.getCarried();
                     if (!toPlace.isEmpty()) {
                         outputs.get(0).stack = toPlace.copy();
                         Identifier id = BuiltInRegistries.ITEM.getKey(outputs.get(0).stack.getItem());
                         if (id != null) this.recipeNameBox.setValue(id.toString());
+                        this.outputCountBox.setValue(String.valueOf(outputs.get(0).stack.getCount()));
                         this.draggedItem.clear();
                     }
                 }
@@ -1551,7 +1578,7 @@ public class EditorScreen extends Screen {
                 this.saturationBox.isFocused() || this.attackDamageBox.isFocused() || this.attackSpeedBox.isFocused() ||
                 this.durabilityBox.isFocused() || this.enchantabilityBox.isFocused() || this.burnTimeBox.isFocused() ||
                 this.eatTimeBox.isFocused() || this.miningLevelBox.isFocused() || this.miningSpeedBox.isFocused() ||
-                this.loreBox.isFocused()) {
+                this.loreBox.isFocused() || this.outputCountBox.isFocused()) {
             return super.keyPressed(event);
         }
 
